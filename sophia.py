@@ -1,5 +1,6 @@
 import argparse
 import hashlib
+import statistics
 import os
 import subprocess
 import threading
@@ -74,6 +75,9 @@ CHANNEL_LISTS = {
     "dual": [1, 6, 11, 36, 40, 44, 48, 149, 153, 157, 161],
 }
 
+MAX_DISPLAY_DISTANCE_M = 180.0
+RSSI_HISTORY_SIZE = 9
+
 
 def calculate_distance(rssi: int, measure_power: float = -30.0) -> float:
     if rssi == 0:
@@ -81,6 +85,18 @@ def calculate_distance(rssi: int, measure_power: float = -30.0) -> float:
     n = 2.0
     ratio = (measure_power - rssi) / (10 * n)
     return round(10 ** ratio, 2)
+
+
+def robust_distance_from_rssi(rssi_history: List[int], measure_power: float) -> tuple[float, int]:
+    if not rssi_history:
+        return -1.0, -100
+
+    stable_rssi = int(round(statistics.median(rssi_history)))
+    distance = calculate_distance(stable_rssi, measure_power)
+    if distance < 0:
+        return distance, stable_rssi
+
+    return round(min(distance, MAX_DISPLAY_DISTANCE_M), 2), stable_rssi
 
 
 def get_ssid(packet) -> str:
@@ -213,7 +229,6 @@ def update_device(packet, measure_power: float) -> None:
     ssid = get_ssid(packet)
     crypto = get_crypto(packet)
     channel = get_channel(packet)
-    distance = calculate_distance(rssi, measure_power)
     risk, category, matches = classify_network(ssid, crypto, bssid)
 
     now = time.time()
@@ -224,6 +239,7 @@ def update_device(packet, measure_power: float) -> None:
         first_seen = now
         avg_rssi = float(rssi)
         jitter = 0.0
+        rssi_history: List[int] = []
         if previous:
             sightings = int(previous.get("sightings", 1)) + 1
             first_seen = float(previous.get("first_seen", now))
@@ -231,6 +247,13 @@ def update_device(packet, measure_power: float) -> None:
             avg_rssi = prev_avg + ((rssi - prev_avg) / max(sightings, 1))
             prev_jitter = float(previous.get("rssi_jitter", 0.0))
             jitter = (prev_jitter * 0.7) + (abs(rssi - prev_avg) * 0.3)
+            rssi_history = list(previous.get("rssi_history", []))
+
+        rssi_history.append(rssi)
+        if len(rssi_history) > RSSI_HISTORY_SIZE:
+            rssi_history = rssi_history[-RSSI_HISTORY_SIZE:]
+
+        distance, stable_rssi = robust_distance_from_rssi(rssi_history, measure_power)
 
         confidence = compute_confidence(
             rssi=rssi,
@@ -246,6 +269,8 @@ def update_device(packet, measure_power: float) -> None:
             "rssi": rssi,
             "avg_rssi": round(avg_rssi, 2),
             "rssi_jitter": round(jitter, 2),
+            "rssi_stable": stable_rssi,
+            "rssi_history": rssi_history,
             "sightings": sightings,
             "first_seen": first_seen,
             "distance": distance,

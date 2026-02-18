@@ -4,6 +4,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_IFACE="${1:-wlan0}"
 
+detect_base_iface() {
+  local iface
+  iface="$(iw dev 2>/dev/null | awk '/Interface/ {print $2}' | grep -E '^wl' | head -n1 || true)"
+  echo "$iface"
+}
+
+find_monitor_iface() {
+  local iface
+  iface="$(iw dev 2>/dev/null | awk '/Interface/ {cur=$2} /type monitor/ {print cur; exit}')"
+  echo "$iface"
+}
+
 if [[ "${EUID}" -ne 0 ]]; then
   if command -v pkexec >/dev/null 2>&1; then
     exec pkexec "$0" "$@"
@@ -11,14 +23,40 @@ if [[ "${EUID}" -ne 0 ]]; then
   exec sudo "$0" "$@"
 fi
 
+if ! iw dev "$BASE_IFACE" info >/dev/null 2>&1; then
+  AUTO_IFACE="$(detect_base_iface)"
+  if [[ -n "$AUTO_IFACE" ]]; then
+    echo "[SOPHIA] '$BASE_IFACE' not found, using '$AUTO_IFACE'"
+    BASE_IFACE="$AUTO_IFACE"
+  fi
+fi
+
+if ! iw dev "$BASE_IFACE" info >/dev/null 2>&1; then
+  echo "[SOPHIA] No usable base Wi-Fi interface found."
+  echo "[SOPHIA] Try: ./launch_sophia.sh <your_iface>"
+  exit 1
+fi
+
 echo "[SOPHIA] Running pre-flight monitor mode automation..."
 airmon-ng check kill || true
-airmon-ng start "$BASE_IFACE"
+
+if iw dev "$BASE_IFACE" info | grep -q "type monitor"; then
+  echo "[SOPHIA] Interface '$BASE_IFACE' already in monitor mode"
+else
+  if ! airmon-ng start "$BASE_IFACE"; then
+    echo "[SOPHIA] airmon-ng start failed; attempting to continue with existing monitor interface"
+  fi
+fi
 
 MON_IFACE="${BASE_IFACE}mon"
 if ! iw dev "$MON_IFACE" info >/dev/null 2>&1; then
   if iw dev "$BASE_IFACE" info | grep -q "type monitor"; then
     MON_IFACE="$BASE_IFACE"
+  else
+    AUTO_MON_IFACE="$(find_monitor_iface)"
+    if [[ -n "$AUTO_MON_IFACE" ]]; then
+      MON_IFACE="$AUTO_MON_IFACE"
+    fi
   fi
 fi
 

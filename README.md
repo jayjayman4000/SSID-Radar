@@ -40,6 +40,12 @@ To restore normal networking, double-click `SOPHIA WiFi Radar Shutdown`.
 ./launch_sophia.sh wlan0
 ```
 
+If your adapter is not named `wlan0` (for example `wlp2s0`), run:
+
+```bash
+./launch_sophia.sh wlp2s0
+```
+
 ## Restore normal Wi-Fi / internet
 
 If monitor mode stays active and internet is down, run:

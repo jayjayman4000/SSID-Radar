@@ -293,6 +293,7 @@
     let channelConfig = null;
     let movementWatchId = null;
     let movementPoints = [];
+    let channelFormDirty = false;
 
     const alertRules = {
       minRssi: -80,
@@ -301,6 +302,42 @@
     };
 
     const SENSITIVE_CATEGORIES = new Set(['FLOCK', 'POLICE', 'CAMERA']);
+
+    function saveUiSettings() {
+      const settings = {
+        ignoreHome: ignoreHome.checked,
+        beepHigh: beepHigh.checked,
+        zoom: zoomSlider.value,
+        minRssi: ruleMinRssi.value,
+        minConfidence: ruleMinConfidence.value,
+        categories: ruleCategoryBoxes.filter((box) => box.checked).map((box) => box.value),
+        channelMode: channelMode.value,
+        hopMs: hopMs.value,
+        lockChannel: lockChannel.value,
+      };
+      localStorage.setItem('sophiaUiSettings', JSON.stringify(settings));
+    }
+
+    function loadUiSettings() {
+      try {
+        const raw = localStorage.getItem('sophiaUiSettings');
+        if (!raw) return;
+        const settings = JSON.parse(raw);
+        if (typeof settings.ignoreHome === 'boolean') ignoreHome.checked = settings.ignoreHome;
+        if (typeof settings.beepHigh === 'boolean') beepHigh.checked = settings.beepHigh;
+        if (settings.zoom) zoomSlider.value = settings.zoom;
+        if (settings.minRssi) ruleMinRssi.value = settings.minRssi;
+        if (settings.minConfidence) ruleMinConfidence.value = settings.minConfidence;
+        if (Array.isArray(settings.categories)) {
+          const enabled = new Set(settings.categories);
+          ruleCategoryBoxes.forEach((box) => { box.checked = enabled.has(box.value); });
+        }
+        if (settings.channelMode) channelMode.value = settings.channelMode;
+        if (settings.hopMs) hopMs.value = settings.hopMs;
+        if (settings.lockChannel) lockChannel.value = settings.lockChannel;
+      } catch {
+      }
+    }
 
     function sizeMovementCanvas() {
       const ratio = window.devicePixelRatio || 1;
@@ -448,7 +485,7 @@
         <article class="net-item">
           <div class="ssid">${network.ssid}</div>
           <div class="meta">BSSID: ${network.bssid}</div>
-          <div class="meta">RSSI: ${network.rssi} dBm • Dist: ${network.distance} m • Ch: ${network.channel}</div>
+          <div class="meta">RSSI: ${network.rssi} dBm (stable ${network.rssi_stable ?? network.rssi} dBm) • Dist≈ ${network.distance} m • Ch: ${network.channel}</div>
           <div class="meta">Crypto: ${network.crypto} • Type: ${network.category} • SSID Count: ${network.same_ssid_count || 1}</div>
           <div class="meta">Confidence: ${network.confidence || 0}% • Seen: ${network.sightings || 1}</div>
           <div class="risk ${riskClass(network.risk)}">Risk: ${network.risk}</div>
@@ -650,7 +687,9 @@
           body: JSON.stringify(payload),
         });
         channelConfig = await response.json();
+        channelFormDirty = false;
         refreshChannelUI();
+        saveUiSettings();
       } catch {
         channelStatus.textContent = 'channel update failed';
       }
@@ -658,12 +697,15 @@
 
     function refreshChannelUI() {
       if (!channelConfig) return;
-      channelMode.value = channelConfig.mode || '2.4GHz';
-      hopMs.value = String(Math.round((channelConfig.hop_delay || 0.35) * 1000));
-      lockChannel.value = channelConfig.locked_channel || 0;
+      if (!channelFormDirty) {
+        channelMode.value = channelConfig.mode || '2.4GHz';
+        hopMs.value = String(Math.round((channelConfig.hop_delay || 0.35) * 1000));
+        lockChannel.value = channelConfig.locked_channel || 0;
+      }
       const lockText = channelConfig.locked_channel ? `locked ${channelConfig.locked_channel}` : 'hopping';
       const current = channelConfig.current_channel ? `ch ${channelConfig.current_channel}` : 'ch ?';
-      channelStatus.textContent = `${current} • ${lockText}`;
+      const pending = channelFormDirty ? ' • pending changes' : '';
+      channelStatus.textContent = `${current} • ${lockText}${pending}`;
     }
 
     function ingestPayload(data) {
@@ -699,6 +741,7 @@
 
     sizeCanvas();
     sizeMovementCanvas();
+    loadUiSettings();
     window.addEventListener('resize', sizeCanvas);
     window.addEventListener('resize', sizeMovementCanvas);
     window.addEventListener('pointerdown', () => {
@@ -711,20 +754,47 @@
     }, { once: true });
     ignoreHome.addEventListener('change', () => {
       refreshFilteredView(radarData.length);
+      saveUiSettings();
     });
     beepHigh.addEventListener('change', () => {
       audioState.textContent = beepHigh.checked ? 'Audio armed' : 'Audio muted';
+      saveUiSettings();
     });
     applyChannel.addEventListener('click', applyChannelConfig);
-    ruleMinRssi.addEventListener('input', updateAlertRulesFromUI);
-    ruleMinConfidence.addEventListener('input', updateAlertRulesFromUI);
-    ruleCategoryBoxes.forEach((box) => box.addEventListener('change', updateAlertRulesFromUI));
+    channelMode.addEventListener('change', () => {
+      channelFormDirty = true;
+      saveUiSettings();
+      refreshChannelUI();
+    });
+    hopMs.addEventListener('input', () => {
+      channelFormDirty = true;
+      saveUiSettings();
+      refreshChannelUI();
+    });
+    lockChannel.addEventListener('input', () => {
+      channelFormDirty = true;
+      saveUiSettings();
+      refreshChannelUI();
+    });
+    ruleMinRssi.addEventListener('input', () => {
+      updateAlertRulesFromUI();
+      saveUiSettings();
+    });
+    ruleMinConfidence.addEventListener('input', () => {
+      updateAlertRulesFromUI();
+      saveUiSettings();
+    });
+    ruleCategoryBoxes.forEach((box) => box.addEventListener('change', () => {
+      updateAlertRulesFromUI();
+      saveUiSettings();
+    }));
     startMovementBtn.addEventListener('click', startMovementMode);
     stopMovementBtn.addEventListener('click', stopMovementMode);
     clearMovementBtn.addEventListener('click', clearMovement);
     zoomSlider.addEventListener('input', () => {
       zoomFactor = Number(zoomSlider.value) / 100;
       zoomValue.textContent = `${zoomFactor.toFixed(1)}x`;
+      saveUiSettings();
     });
     zoomFactor = Number(zoomSlider.value) / 100;
     zoomValue.textContent = `${zoomFactor.toFixed(1)}x`;
