@@ -8,8 +8,9 @@ covers home networks, police cruisers, flock cameras etc.
 - Threaded Scapy sniffer + Flask server in one script (`sophia.py`)
 - In-script channel hopping (1-13) so no second terminal is needed
 - High-risk classification for FLOCK / police-like / security camera signatures
-- HUD toggle to ignore home-like networks
+- HUD toggle to ignore dorm/home-like networks (including SSIDs with 10+ matching names)
 - Audible beep alerts for newly detected high-risk targets
+- HUD zoom slider to change radar scale
 - Launcher script (`launch_sophia.sh`) that runs:
   - `airmon-ng check kill`
   - `airmon-ng start <iface>`

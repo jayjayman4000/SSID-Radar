@@ -7,7 +7,7 @@ import time
 from typing import Dict, List
 
 from flask import Flask, jsonify, render_template, request
-from scapy.all import AsyncSniffer, Dot11, Dot11Beacon, Dot11Elt
+from scapy.all import AsyncSniffer, Dot11, Dot11Beacon, Dot11Elt, Dot11ProbeResp
 
 
 app = Flask(__name__, template_folder="templates")
@@ -78,8 +78,12 @@ def get_ssid(packet) -> str:
 
 
 def get_crypto(packet) -> str:
+    network_stats = get_network_stats(packet)
+    if network_stats is None:
+        return "UNKNOWN"
+
     try:
-        crypto = packet[Dot11Beacon].network_stats().get("crypto", [])
+        crypto = network_stats.get("crypto", [])
         normalized = sorted(str(item).upper() for item in crypto)
         return ",".join(normalized) if normalized else "OPEN"
     except Exception:
@@ -87,11 +91,35 @@ def get_crypto(packet) -> str:
 
 
 def get_channel(packet) -> int:
+    network_stats = get_network_stats(packet)
+    if network_stats is not None:
+        try:
+            channel = network_stats.get("channel")
+            if channel is not None:
+                return int(channel)
+        except Exception:
+            pass
+
     try:
-        channel = packet[Dot11Beacon].network_stats().get("channel")
-        return int(channel) if channel is not None else -1
+        element = packet.getlayer(Dot11Elt)
+        while element is not None:
+            if getattr(element, "ID", None) == 3 and hasattr(element, "info") and element.info:
+                return int(element.info[0])
+            element = element.payload.getlayer(Dot11Elt)
     except Exception:
-        return -1
+        pass
+    return -1
+
+
+def get_network_stats(packet):
+    try:
+        if packet.haslayer(Dot11Beacon):
+            return packet[Dot11Beacon].network_stats()
+        if packet.haslayer(Dot11ProbeResp):
+            return packet[Dot11ProbeResp].network_stats()
+    except Exception:
+        return None
+    return None
 
 
 def score_risk(ssid: str, crypto: str) -> str:
@@ -145,7 +173,7 @@ def classify_network(ssid: str, crypto: str, bssid: str) -> tuple[str, str, List
 def update_device(packet, measure_power: float) -> None:
     global data_version
 
-    if not packet.haslayer(Dot11Beacon):
+    if not (packet.haslayer(Dot11Beacon) or packet.haslayer(Dot11ProbeResp)):
         return
 
     bssid = packet[Dot11].addr2
@@ -204,6 +232,19 @@ def build_radar_payload(max_distance: float = 60.0) -> List[dict]:
 
         for key in stale_keys:
             del detected_devices[key]
+
+    ssid_counts: Dict[str, int] = {}
+    for item in payload:
+        key = item["ssid"].strip().lower()
+        if key == "":
+            key = "hidden ssid"
+        ssid_counts[key] = ssid_counts.get(key, 0) + 1
+
+    for item in payload:
+        key = item["ssid"].strip().lower()
+        if key == "":
+            key = "hidden ssid"
+        item["same_ssid_count"] = ssid_counts.get(key, 1)
 
     payload.sort(key=lambda item: item["rssi"], reverse=True)
     return payload

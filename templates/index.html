@@ -97,6 +97,16 @@
       cursor: pointer;
     }
 
+    .slider-wrap {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .slider-wrap input[type="range"] {
+      width: 110px;
+    }
+
     .net-list {
       overflow: auto;
       padding: 8px;
@@ -149,8 +159,13 @@
       <span>Live scan</span>
     </div>
     <div class="controls">
-      <label><input id="ignoreHome" type="checkbox"> Ignore home-like</label>
+      <label><input id="ignoreHome" type="checkbox"> Ignore dorm/home-like</label>
       <label><input id="beepHigh" type="checkbox" checked> Beep on high-risk</label>
+      <div class="slider-wrap">
+        <span>Zoom</span>
+        <input id="zoomSlider" type="range" min="60" max="220" step="10" value="100">
+        <span id="zoomValue">1.0x</span>
+      </div>
       <span id="audioState">Audio standby</span>
     </div>
     <div id="networkList" class="net-list"></div>
@@ -164,6 +179,8 @@
     const lastUpdate = document.getElementById('lastUpdate');
     const ignoreHome = document.getElementById('ignoreHome');
     const beepHigh = document.getElementById('beepHigh');
+    const zoomSlider = document.getElementById('zoomSlider');
+    const zoomValue = document.getElementById('zoomValue');
     const audioState = document.getElementById('audioState');
 
     let sweepAngle = 0;
@@ -171,6 +188,9 @@
     let cursor = -1;
     const alertedHigh = new Set();
     let audioContext = null;
+    let zoomFactor = 1.0;
+
+    const SENSITIVE_CATEGORIES = new Set(['FLOCK', 'POLICE', 'CAMERA']);
 
     function sizeCanvas() {
       const ratio = window.devicePixelRatio || 1;
@@ -236,13 +256,20 @@
 
     function visibleNetworks() {
       if (!ignoreHome.checked) return radarData;
-      return radarData.filter((network) => network.category !== 'HOME');
+      return radarData.filter((network) => {
+        const denseDormLike = (network.same_ssid_count || 1) >= 10;
+        if (SENSITIVE_CATEGORIES.has(network.category)) {
+          return true;
+        }
+        return !denseDormLike && network.category !== 'HOME';
+      });
     }
 
     function drawTargets(cx, cy, radius) {
       visibleNetworks().forEach((network) => {
         const angle = (network.angle * Math.PI) / 180;
-        const r = network.normalized_distance * radius;
+        const scaledDistance = Math.min(network.normalized_distance * zoomFactor, 1.0);
+        const r = scaledDistance * radius;
         const x = cx + Math.cos(angle) * r;
         const y = cy + Math.sin(angle) * r;
 
@@ -284,7 +311,7 @@
           <div class="ssid">${network.ssid}</div>
           <div class="meta">BSSID: ${network.bssid}</div>
           <div class="meta">RSSI: ${network.rssi} dBm • Dist: ${network.distance} m • Ch: ${network.channel}</div>
-          <div class="meta">Crypto: ${network.crypto} • Type: ${network.category}</div>
+          <div class="meta">Crypto: ${network.crypto} • Type: ${network.category} • SSID Count: ${network.same_ssid_count || 1}</div>
           <div class="risk ${riskClass(network.risk)}">Risk: ${network.risk}</div>
         </article>
       `).join('');
@@ -325,10 +352,9 @@
     function maybeAlertHighRisk(networks) {
       if (!beepHigh.checked) return;
 
-      const sensitiveCategories = new Set(['FLOCK', 'POLICE', 'CAMERA']);
       let shouldBeep = false;
       networks.forEach((network) => {
-        if (network.risk === 'HIGH' && sensitiveCategories.has(network.category) && !alertedHigh.has(network.bssid)) {
+        if (network.risk === 'HIGH' && SENSITIVE_CATEGORIES.has(network.category) && !alertedHigh.has(network.bssid)) {
           alertedHigh.add(network.bssid);
           shouldBeep = true;
         }
@@ -392,6 +418,12 @@
     beepHigh.addEventListener('change', () => {
       audioState.textContent = beepHigh.checked ? 'Audio armed' : 'Audio muted';
     });
+    zoomSlider.addEventListener('input', () => {
+      zoomFactor = Number(zoomSlider.value) / 100;
+      zoomValue.textContent = `${zoomFactor.toFixed(1)}x`;
+    });
+    zoomFactor = Number(zoomSlider.value) / 100;
+    zoomValue.textContent = `${zoomFactor.toFixed(1)}x`;
     render();
     fetchData();
     longPollLoop();
