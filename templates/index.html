@@ -79,6 +79,24 @@
       justify-content: space-between;
     }
 
+    .controls {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line-soft);
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      color: #a8d4f8;
+      font-size: 12px;
+      flex-wrap: wrap;
+    }
+
+    .controls label {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+      cursor: pointer;
+    }
+
     .net-list {
       overflow: auto;
       padding: 8px;
@@ -130,6 +148,11 @@
       <span id="countLabel">0 active</span>
       <span>Live scan</span>
     </div>
+    <div class="controls">
+      <label><input id="ignoreHome" type="checkbox"> Ignore home-like</label>
+      <label><input id="beepHigh" type="checkbox" checked> Beep on high-risk</label>
+      <span id="audioState">Audio standby</span>
+    </div>
     <div id="networkList" class="net-list"></div>
   </aside>
 
@@ -139,10 +162,15 @@
     const listElement = document.getElementById('networkList');
     const countLabel = document.getElementById('countLabel');
     const lastUpdate = document.getElementById('lastUpdate');
+    const ignoreHome = document.getElementById('ignoreHome');
+    const beepHigh = document.getElementById('beepHigh');
+    const audioState = document.getElementById('audioState');
 
     let sweepAngle = 0;
     let radarData = [];
     let cursor = -1;
+    const alertedHigh = new Set();
+    let audioContext = null;
 
     function sizeCanvas() {
       const ratio = window.devicePixelRatio || 1;
@@ -206,8 +234,13 @@
       return '#42d392';
     }
 
+    function visibleNetworks() {
+      if (!ignoreHome.checked) return radarData;
+      return radarData.filter((network) => network.category !== 'HOME');
+    }
+
     function drawTargets(cx, cy, radius) {
-      radarData.forEach((network) => {
+      visibleNetworks().forEach((network) => {
         const angle = (network.angle * Math.PI) / 180;
         const r = network.normalized_distance * radius;
         const x = cx + Math.cos(angle) * r;
@@ -251,10 +284,59 @@
           <div class="ssid">${network.ssid}</div>
           <div class="meta">BSSID: ${network.bssid}</div>
           <div class="meta">RSSI: ${network.rssi} dBm • Dist: ${network.distance} m • Ch: ${network.channel}</div>
-          <div class="meta">Crypto: ${network.crypto}</div>
+          <div class="meta">Crypto: ${network.crypto} • Type: ${network.category}</div>
           <div class="risk ${riskClass(network.risk)}">Risk: ${network.risk}</div>
         </article>
       `).join('');
+    }
+
+    function ensureAudioContext() {
+      if (!audioContext) {
+        const Context = window.AudioContext || window.webkitAudioContext;
+        if (!Context) {
+          audioState.textContent = 'Audio unavailable';
+          return null;
+        }
+        audioContext = new Context();
+      }
+      return audioContext;
+    }
+
+    function beep() {
+      const ctx = ensureAudioContext();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
+
+      const oscillator = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+      oscillator.type = 'square';
+      oscillator.frequency.setValueAtTime(900, ctx.currentTime);
+      gainNode.gain.setValueAtTime(0.0001, ctx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + 0.02);
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.18);
+      oscillator.connect(gainNode);
+      gainNode.connect(ctx.destination);
+      oscillator.start();
+      oscillator.stop(ctx.currentTime + 0.2);
+    }
+
+    function maybeAlertHighRisk(networks) {
+      if (!beepHigh.checked) return;
+
+      const sensitiveCategories = new Set(['FLOCK', 'POLICE', 'CAMERA']);
+      let shouldBeep = false;
+      networks.forEach((network) => {
+        if (network.risk === 'HIGH' && sensitiveCategories.has(network.category) && !alertedHigh.has(network.bssid)) {
+          alertedHigh.add(network.bssid);
+          shouldBeep = true;
+        }
+      });
+
+      if (shouldBeep) {
+        beep();
+      }
     }
 
     async function fetchData() {
@@ -263,8 +345,10 @@
         const data = await response.json();
         radarData = data.networks || [];
         cursor = Number.isInteger(data.version) ? data.version : cursor;
-        countLabel.textContent = `${data.count || 0} active`;
-        renderList(radarData);
+        const visible = visibleNetworks();
+        countLabel.textContent = `${visible.length} shown / ${data.count || 0} active`;
+        renderList(visible);
+        maybeAlertHighRisk(radarData);
         lastUpdate.textContent = new Date().toLocaleTimeString();
       } catch {
         countLabel.textContent = 'Connection error';
@@ -278,8 +362,10 @@
           const data = await response.json();
           radarData = data.networks || [];
           cursor = Number.isInteger(data.version) ? data.version : cursor;
-          countLabel.textContent = `${data.count || 0} active`;
-          renderList(radarData);
+          const visible = visibleNetworks();
+          countLabel.textContent = `${visible.length} shown / ${data.count || 0} active`;
+          renderList(visible);
+          maybeAlertHighRisk(radarData);
           lastUpdate.textContent = new Date().toLocaleTimeString();
         } catch {
           countLabel.textContent = 'Connection error';
@@ -290,6 +376,22 @@
 
     sizeCanvas();
     window.addEventListener('resize', sizeCanvas);
+    window.addEventListener('pointerdown', () => {
+      const ctx = ensureAudioContext();
+      if (ctx) {
+        ctx.resume().then(() => {
+          audioState.textContent = 'Audio armed';
+        }).catch(() => {});
+      }
+    }, { once: true });
+    ignoreHome.addEventListener('change', () => {
+      const visible = visibleNetworks();
+      countLabel.textContent = `${visible.length} shown / ${radarData.length} active`;
+      renderList(visible);
+    });
+    beepHigh.addEventListener('change', () => {
+      audioState.textContent = beepHigh.checked ? 'Audio armed' : 'Audio muted';
+    });
     render();
     fetchData();
     longPollLoop();

@@ -16,6 +16,49 @@ update_condition = threading.Condition(device_lock)
 detected_devices: Dict[str, dict] = {}
 data_version = 0
 
+FLOCK_KEYWORDS = ["flock", "falcon", "lpr", "plate", "flocksafety"]
+CAMERA_KEYWORDS = [
+    "camera",
+    "cam",
+    "cctv",
+    "hikvision",
+    "dahua",
+    "axis",
+    "ring",
+    "arlo",
+    "nest cam",
+    "reolink",
+    "amcrest",
+    "unifi-video",
+    "surveillance",
+]
+POLICE_KEYWORDS = [
+    "police",
+    "sheriff",
+    "state patrol",
+    "highway patrol",
+    "public safety",
+    "law enforcement",
+    "marshal",
+    "trooper",
+    "county pd",
+    "city pd",
+    "leo",
+]
+HOME_KEYWORDS = [
+    "home",
+    "house",
+    "apartment",
+    "mywifi",
+    "linksys",
+    "netgear",
+    "xfinity",
+    "spectrum",
+    "verizon",
+    "att",
+    "tp-link",
+]
+
 
 def calculate_distance(rssi: int, measure_power: float = -30.0) -> float:
     if rssi == 0:
@@ -63,6 +106,42 @@ def score_risk(ssid: str, crypto: str) -> str:
     return "LOW"
 
 
+def has_keyword(text: str, keywords: List[str]) -> bool:
+    return any(keyword in text for keyword in keywords)
+
+
+def classify_network(ssid: str, crypto: str, bssid: str) -> tuple[str, str, List[str]]:
+    lowered = ssid.lower()
+    crypto_upper = crypto.upper()
+    matches: List[str] = []
+
+    if has_keyword(lowered, FLOCK_KEYWORDS):
+        matches.append("flock-signature")
+        return "HIGH", "FLOCK", matches
+
+    if has_keyword(lowered, POLICE_KEYWORDS):
+        matches.append("police-signature")
+        return "HIGH", "POLICE", matches
+
+    if has_keyword(lowered, CAMERA_KEYWORDS):
+        matches.append("camera-signature")
+        return "HIGH", "CAMERA", matches
+
+    if has_keyword(lowered, HOME_KEYWORDS):
+        matches.append("home-signature")
+        return "LOW", "HOME", matches
+
+    if "OPEN" in crypto_upper or "UNKNOWN" in crypto_upper or "WEP" in crypto_upper:
+        matches.append("weak-or-open-crypto")
+        return "HIGH", "OPEN", matches
+
+    baseline_risk = score_risk(ssid, crypto)
+    category = "GENERAL"
+    if baseline_risk == "MED":
+        category = "PUBLIC"
+    return baseline_risk, category, matches
+
+
 def update_device(packet, measure_power: float) -> None:
     global data_version
 
@@ -78,7 +157,7 @@ def update_device(packet, measure_power: float) -> None:
     crypto = get_crypto(packet)
     channel = get_channel(packet)
     distance = calculate_distance(rssi, measure_power)
-    risk = score_risk(ssid, crypto)
+    risk, category, matches = classify_network(ssid, crypto, bssid)
 
     with update_condition:
         detected_devices[bssid] = {
@@ -87,6 +166,8 @@ def update_device(packet, measure_power: float) -> None:
             "rssi": rssi,
             "distance": distance,
             "risk": risk,
+            "category": category,
+            "matches": matches,
             "crypto": crypto,
             "channel": channel,
             "last_seen": time.time(),
