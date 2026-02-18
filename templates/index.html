@@ -302,7 +302,11 @@
 
     function renderList(networks) {
       if (!networks.length) {
-        listElement.innerHTML = '<div class="net-item">No beacons captured yet.</div>';
+        const hiddenCount = Math.max(0, radarData.length - networks.length);
+        const emptyMessage = hiddenCount > 0
+          ? `No networks match current filters (${hiddenCount} hidden).`
+          : 'No beacons captured yet.';
+        listElement.innerHTML = `<div class="net-item">${emptyMessage}</div>`;
         return;
       }
 
@@ -315,6 +319,14 @@
           <div class="risk ${riskClass(network.risk)}">Risk: ${network.risk}</div>
         </article>
       `).join('');
+    }
+
+    function refreshFilteredView(totalCount) {
+      const visible = visibleNetworks();
+      const total = Number.isInteger(totalCount) ? totalCount : radarData.length;
+      const hidden = Math.max(0, total - visible.length);
+      countLabel.textContent = `${visible.length} shown / ${total} active (${hidden} hidden)`;
+      renderList(visible);
     }
 
     function ensureAudioContext() {
@@ -371,9 +383,7 @@
         const data = await response.json();
         radarData = data.networks || [];
         cursor = Number.isInteger(data.version) ? data.version : cursor;
-        const visible = visibleNetworks();
-        countLabel.textContent = `${visible.length} shown / ${data.count || 0} active`;
-        renderList(visible);
+        refreshFilteredView(data.count || 0);
         maybeAlertHighRisk(radarData);
         lastUpdate.textContent = new Date().toLocaleTimeString();
       } catch {
@@ -388,9 +398,7 @@
           const data = await response.json();
           radarData = data.networks || [];
           cursor = Number.isInteger(data.version) ? data.version : cursor;
-          const visible = visibleNetworks();
-          countLabel.textContent = `${visible.length} shown / ${data.count || 0} active`;
-          renderList(visible);
+          refreshFilteredView(data.count || 0);
           maybeAlertHighRisk(radarData);
           lastUpdate.textContent = new Date().toLocaleTimeString();
         } catch {
@@ -411,9 +419,7 @@
       }
     }, { once: true });
     ignoreHome.addEventListener('change', () => {
-      const visible = visibleNetworks();
-      countLabel.textContent = `${visible.length} shown / ${radarData.length} active`;
-      renderList(visible);
+      refreshFilteredView(radarData.length);
     });
     beepHigh.addEventListener('change', () => {
       audioState.textContent = beepHigh.checked ? 'Audio armed' : 'Audio muted';

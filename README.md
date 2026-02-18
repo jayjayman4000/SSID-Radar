@@ -21,6 +21,7 @@ covers home networks, police cruisers, flock cameras etc.
 ```bash
 python3 -m pip install -r requirements.txt
 chmod +x launch_sophia.sh
+chmod +x shutdown_sophia.sh
 chmod +x install_desktop_launcher.sh
 ./install_desktop_launcher.sh
 ```
@@ -31,6 +32,14 @@ Then double-click `SOPHIA WiFi Radar` on the Kali desktop.
 
 ```bash
 ./launch_sophia.sh wlan0
+```
+
+## Restore normal Wi-Fi / internet
+
+If monitor mode stays active and internet is down, run:
+
+```bash
+./shutdown_sophia.sh wlan0
 ```
 
 HUD URL:
