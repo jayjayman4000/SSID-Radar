@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=SOPHIA WiFi Radar
+Comment=Launch SOPHIA Wi-Fi Recon Radar
+Exec=/bin/bash -lc 'cd "$(dirname "%k")" && ./launch_sophia.sh'
+Terminal=true
+Categories=Network;Security;

@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SOPHIA Wi-Fi Radar</title>
+  <style>
+    :root {
+      --bg: #020917;
+      --panel: #07162d;
+      --line: #1b4d88;
+      --line-soft: #0d2f58;
+      --accent: #2ea4ff;
+      --accent-soft: rgba(46, 164, 255, 0.2);
+      --text: #c9e8ff;
+      --high: #ff4d6d;
+      --med: #ffd166;
+      --low: #42d392;
+    }
+
+    * {
+      box-sizing: border-box;
+      font-family: "Segoe UI", Tahoma, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 20% 20%, #071a33 0%, var(--bg) 55%);
+      color: var(--text);
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 1fr 420px;
+      gap: 16px;
+      padding: 16px;
+    }
+
+    .panel {
+      background: linear-gradient(180deg, rgba(7, 22, 45, 0.9), rgba(3, 11, 24, 0.95));
+      border: 1px solid var(--line-soft);
+      border-radius: 12px;
+      box-shadow: inset 0 0 30px rgba(0, 102, 255, 0.08);
+      overflow: hidden;
+    }
+
+    .radar-wrap {
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    .hud-title,
+    .list-title {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line-soft);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      letter-spacing: 0.04em;
+      font-weight: 600;
+    }
+
+    #radarCanvas {
+      width: 100%;
+      height: calc(100vh - 110px);
+      display: block;
+      background: repeating-radial-gradient(circle at center, rgba(46, 164, 255, 0.04) 0 36px, transparent 36px 72px);
+    }
+
+    .list-panel {
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+    }
+
+    .stats {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line-soft);
+      font-size: 13px;
+      color: #9ccff6;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .net-list {
+      overflow: auto;
+      padding: 8px;
+      display: grid;
+      gap: 8px;
+      align-content: start;
+    }
+
+    .net-item {
+      border: 1px solid #14406f;
+      border-radius: 10px;
+      padding: 10px;
+      background: rgba(8, 25, 47, 0.8);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .ssid {
+      font-weight: 600;
+      color: #d8eeff;
+      margin-bottom: 4px;
+    }
+
+    .meta {
+      color: #9bc9ef;
+    }
+
+    .risk {
+      font-weight: 700;
+    }
+
+    .risk-high { color: var(--high); }
+    .risk-med { color: var(--med); }
+    .risk-low { color: var(--low); }
+  </style>
+</head>
+<body>
+  <section class="panel radar-wrap">
+    <header class="hud-title">
+      <span>SOPHIA TACTICAL RADAR</span>
+      <span id="lastUpdate">--</span>
+    </header>
+    <canvas id="radarCanvas"></canvas>
+  </section>
+
+  <aside class="panel list-panel">
+    <header class="list-title">Detected Networks</header>
+    <div class="stats">
+      <span id="countLabel">0 active</span>
+      <span>Live scan</span>
+    </div>
+    <div id="networkList" class="net-list"></div>
+  </aside>
+
+  <script>
+    const canvas = document.getElementById('radarCanvas');
+    const context = canvas.getContext('2d');
+    const listElement = document.getElementById('networkList');
+    const countLabel = document.getElementById('countLabel');
+    const lastUpdate = document.getElementById('lastUpdate');
+
+    let sweepAngle = 0;
+    let radarData = [];
+    let cursor = -1;
+
+    function sizeCanvas() {
+      const ratio = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = rect.width * ratio;
+      canvas.height = rect.height * ratio;
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    }
+
+    function riskClass(value) {
+      if (value === 'HIGH') return 'risk-high';
+      if (value === 'MED') return 'risk-med';
+      return 'risk-low';
+    }
+
+    function drawRadarGrid(cx, cy, radius) {
+      context.strokeStyle = 'rgba(46,164,255,0.35)';
+      context.lineWidth = 1;
+      for (let ring = 1; ring <= 4; ring++) {
+        context.beginPath();
+        context.arc(cx, cy, (radius / 4) * ring, 0, Math.PI * 2);
+        context.stroke();
+      }
+
+      context.strokeStyle = 'rgba(46,164,255,0.18)';
+      for (let i = 0; i < 8; i++) {
+        const angle = (Math.PI * 2 * i) / 8;
+        context.beginPath();
+        context.moveTo(cx, cy);
+        context.lineTo(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius);
+        context.stroke();
+      }
+    }
+
+    function drawSweep(cx, cy, radius) {
+      const angle = (sweepAngle * Math.PI) / 180;
+      const gradient = context.createRadialGradient(cx, cy, 0, cx, cy, radius);
+      gradient.addColorStop(0, 'rgba(46,164,255,0.22)');
+      gradient.addColorStop(1, 'rgba(46,164,255,0)');
+
+      context.fillStyle = gradient;
+      context.beginPath();
+      context.moveTo(cx, cy);
+      context.arc(cx, cy, radius, angle - 0.24, angle + 0.24);
+      context.closePath();
+      context.fill();
+
+      context.strokeStyle = 'rgba(46,164,255,0.7)';
+      context.lineWidth = 2;
+      context.beginPath();
+      context.moveTo(cx, cy);
+      context.lineTo(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius);
+      context.stroke();
+
+      sweepAngle = (sweepAngle + 2) % 360;
+    }
+
+    function dotColor(risk) {
+      if (risk === 'HIGH') return '#ff4d6d';
+      if (risk === 'MED') return '#ffd166';
+      return '#42d392';
+    }
+
+    function drawTargets(cx, cy, radius) {
+      radarData.forEach((network) => {
+        const angle = (network.angle * Math.PI) / 180;
+        const r = network.normalized_distance * radius;
+        const x = cx + Math.cos(angle) * r;
+        const y = cy + Math.sin(angle) * r;
+
+        context.fillStyle = dotColor(network.risk);
+        context.beginPath();
+        context.arc(x, y, 4, 0, Math.PI * 2);
+        context.fill();
+
+        context.fillStyle = 'rgba(201,232,255,0.9)';
+        context.font = '11px Segoe UI';
+        context.fillText(network.ssid.slice(0, 14), x + 8, y - 8);
+      });
+    }
+
+    function render() {
+      const width = canvas.getBoundingClientRect().width;
+      const height = canvas.getBoundingClientRect().height;
+      context.clearRect(0, 0, width, height);
+
+      const cx = width / 2;
+      const cy = height / 2;
+      const radius = Math.min(width, height) * 0.44;
+
+      drawRadarGrid(cx, cy, radius);
+      drawSweep(cx, cy, radius);
+      drawTargets(cx, cy, radius);
+
+      requestAnimationFrame(render);
+    }
+
+    function renderList(networks) {
+      if (!networks.length) {
+        listElement.innerHTML = '<div class="net-item">No beacons captured yet.</div>';
+        return;
+      }
+
+      listElement.innerHTML = networks.map((network) => `
+        <article class="net-item">
+          <div class="ssid">${network.ssid}</div>
+          <div class="meta">BSSID: ${network.bssid}</div>
+          <div class="meta">RSSI: ${network.rssi} dBm • Dist: ${network.distance} m • Ch: ${network.channel}</div>
+          <div class="meta">Crypto: ${network.crypto}</div>
+          <div class="risk ${riskClass(network.risk)}">Risk: ${network.risk}</div>
+        </article>
+      `).join('');
+    }
+
+    async function fetchData() {
+      try {
+        const response = await fetch('/api/networks');
+        const data = await response.json();
+        radarData = data.networks || [];
+        cursor = Number.isInteger(data.version) ? data.version : cursor;
+        countLabel.textContent = `${data.count || 0} active`;
+        renderList(radarData);
+        lastUpdate.textContent = new Date().toLocaleTimeString();
+      } catch {
+        countLabel.textContent = 'Connection error';
+      }
+    }
+
+    async function longPollLoop() {
+      while (true) {
+        try {
+          const response = await fetch(`/api/networks/longpoll?since=${cursor}&timeout=25`);
+          const data = await response.json();
+          radarData = data.networks || [];
+          cursor = Number.isInteger(data.version) ? data.version : cursor;
+          countLabel.textContent = `${data.count || 0} active`;
+          renderList(radarData);
+          lastUpdate.textContent = new Date().toLocaleTimeString();
+        } catch {
+          countLabel.textContent = 'Connection error';
+          await new Promise((resolve) => setTimeout(resolve, 1200));
+        }
+      }
+    }
+
+    sizeCanvas();
+    window.addEventListener('resize', sizeCanvas);
+    render();
+    fetchData();
+    longPollLoop();
+  </script>
+</body>
+</html>
