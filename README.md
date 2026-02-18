@@ -1,5 +1,7 @@
 # SOPHIA Wi-Fi Recon Radar
 
+covers home networks, police cruisers, flock cameras etc.
+
 ## What this build includes
 
 - Flask Web HUD (`templates/index.html`) with tactical blue radar map
