@@ -15,6 +15,7 @@ covers home networks, police cruisers, flock cameras etc.
 ## Kali setup (one time)
 
 ```bash
+python3 -m pip install -r requirements.txt
 chmod +x launch_sophia.sh
 chmod +x install_desktop_launcher.sh
 ./install_desktop_launcher.sh
