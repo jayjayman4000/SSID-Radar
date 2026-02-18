@@ -67,7 +67,7 @@
 
     .list-panel {
       display: grid;
-      grid-template-rows: auto auto 1fr;
+      grid-template-rows: auto auto auto auto auto 1fr;
     }
 
     .stats {
@@ -95,6 +95,55 @@
       gap: 6px;
       align-items: center;
       cursor: pointer;
+    }
+
+    .panel-block {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line-soft);
+      color: #a8d4f8;
+      font-size: 12px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .panel-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .panel-block input[type="number"],
+    .panel-block select {
+      background: #0a213f;
+      color: #d5edff;
+      border: 1px solid #1e4c80;
+      border-radius: 6px;
+      padding: 2px 6px;
+    }
+
+    .panel-block button {
+      background: #123a66;
+      color: #d8eeff;
+      border: 1px solid #2f67a3;
+      border-radius: 6px;
+      padding: 4px 8px;
+      cursor: pointer;
+    }
+
+    .rules-grid {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    #movementCanvas {
+      width: 100%;
+      height: 120px;
+      display: block;
+      background: #041426;
+      border: 1px solid #1a487a;
+      border-radius: 8px;
     }
 
     .slider-wrap {
@@ -168,6 +217,44 @@
       </div>
       <span id="audioState">Audio standby</span>
     </div>
+    <div class="panel-block">
+      <div><strong>Channel Controls</strong> <span id="channelStatus">loading...</span></div>
+      <div class="panel-row">
+        <label>Band
+          <select id="channelMode">
+            <option value="2.4GHz">2.4GHz</option>
+            <option value="5GHz">5GHz</option>
+            <option value="dual">Dual</option>
+          </select>
+        </label>
+        <label>Hop ms <input id="hopMs" type="number" min="120" max="2000" step="10" value="350"></label>
+        <label>Lock Ch <input id="lockChannel" type="number" min="0" max="165" value="0"></label>
+        <button id="applyChannel">Apply</button>
+      </div>
+    </div>
+    <div class="panel-block">
+      <div><strong>Alert Rules</strong></div>
+      <div class="panel-row">
+        <label>Min RSSI <input id="ruleMinRssi" type="number" min="-100" max="-20" value="-80"></label>
+        <label>Min Confidence <input id="ruleMinConfidence" type="number" min="0" max="100" value="45"></label>
+      </div>
+      <div class="rules-grid">
+        <label><input class="rule-cat" type="checkbox" value="FLOCK" checked> FLOCK</label>
+        <label><input class="rule-cat" type="checkbox" value="POLICE" checked> POLICE</label>
+        <label><input class="rule-cat" type="checkbox" value="CAMERA" checked> CAMERA</label>
+        <label><input class="rule-cat" type="checkbox" value="OPEN" checked> OPEN</label>
+        <label><input class="rule-cat" type="checkbox" value="GENERAL" checked> GENERAL</label>
+      </div>
+    </div>
+    <div class="panel-block">
+      <div><strong>Movement Mode</strong> <span id="movementState">idle</span></div>
+      <div class="panel-row">
+        <button id="startMovement">Start</button>
+        <button id="stopMovement">Stop</button>
+        <button id="clearMovement">Clear</button>
+      </div>
+      <canvas id="movementCanvas"></canvas>
+    </div>
     <div id="networkList" class="net-list"></div>
   </aside>
 
@@ -182,6 +269,20 @@
     const zoomSlider = document.getElementById('zoomSlider');
     const zoomValue = document.getElementById('zoomValue');
     const audioState = document.getElementById('audioState');
+    const channelStatus = document.getElementById('channelStatus');
+    const channelMode = document.getElementById('channelMode');
+    const hopMs = document.getElementById('hopMs');
+    const lockChannel = document.getElementById('lockChannel');
+    const applyChannel = document.getElementById('applyChannel');
+    const ruleMinRssi = document.getElementById('ruleMinRssi');
+    const ruleMinConfidence = document.getElementById('ruleMinConfidence');
+    const movementCanvas = document.getElementById('movementCanvas');
+    const movementCtx = movementCanvas.getContext('2d');
+    const startMovementBtn = document.getElementById('startMovement');
+    const stopMovementBtn = document.getElementById('stopMovement');
+    const clearMovementBtn = document.getElementById('clearMovement');
+    const movementState = document.getElementById('movementState');
+    const ruleCategoryBoxes = Array.from(document.querySelectorAll('.rule-cat'));
 
     let sweepAngle = 0;
     let radarData = [];
@@ -189,8 +290,41 @@
     const alertedHigh = new Set();
     let audioContext = null;
     let zoomFactor = 1.0;
+    let channelConfig = null;
+    let movementWatchId = null;
+    let movementPoints = [];
+
+    const alertRules = {
+      minRssi: -80,
+      minConfidence: 45,
+      categories: new Set(['FLOCK', 'POLICE', 'CAMERA', 'OPEN', 'GENERAL'])
+    };
 
     const SENSITIVE_CATEGORIES = new Set(['FLOCK', 'POLICE', 'CAMERA']);
+
+    function sizeMovementCanvas() {
+      const ratio = window.devicePixelRatio || 1;
+      const rect = movementCanvas.getBoundingClientRect();
+      movementCanvas.width = rect.width * ratio;
+      movementCanvas.height = rect.height * ratio;
+      movementCtx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    }
+
+    function updateAlertRulesFromUI() {
+      alertRules.minRssi = Number(ruleMinRssi.value);
+      alertRules.minConfidence = Number(ruleMinConfidence.value);
+      alertRules.categories = new Set(ruleCategoryBoxes.filter((box) => box.checked).map((box) => box.value));
+    }
+
+    function shouldAlert(network) {
+      if (network.risk !== 'HIGH') return false;
+      if (network.rssi < alertRules.minRssi) return false;
+      if ((network.confidence || 0) < alertRules.minConfidence) return false;
+      if (alertRules.categories.size === 0) return false;
+      if (alertRules.categories.has(network.category)) return true;
+      if (alertRules.categories.has('GENERAL') && !SENSITIVE_CATEGORIES.has(network.category)) return true;
+      return false;
+    }
 
     function sizeCanvas() {
       const ratio = window.devicePixelRatio || 1;
@@ -316,6 +450,7 @@
           <div class="meta">BSSID: ${network.bssid}</div>
           <div class="meta">RSSI: ${network.rssi} dBm • Dist: ${network.distance} m • Ch: ${network.channel}</div>
           <div class="meta">Crypto: ${network.crypto} • Type: ${network.category} • SSID Count: ${network.same_ssid_count || 1}</div>
+          <div class="meta">Confidence: ${network.confidence || 0}% • Seen: ${network.sightings || 1}</div>
           <div class="risk ${riskClass(network.risk)}">Risk: ${network.risk}</div>
         </article>
       `).join('');
@@ -366,7 +501,7 @@
 
       let shouldBeep = false;
       networks.forEach((network) => {
-        if (network.risk === 'HIGH' && SENSITIVE_CATEGORIES.has(network.category) && !alertedHigh.has(network.bssid)) {
+        if (shouldAlert(network) && !alertedHigh.has(network.bssid)) {
           alertedHigh.add(network.bssid);
           shouldBeep = true;
         }
@@ -377,15 +512,174 @@
       }
     }
 
+    function renderMovementMap() {
+      const width = movementCanvas.getBoundingClientRect().width;
+      const height = movementCanvas.getBoundingClientRect().height;
+      movementCtx.clearRect(0, 0, width, height);
+
+      if (movementPoints.length < 2) {
+        movementCtx.fillStyle = 'rgba(155, 201, 239, 0.8)';
+        movementCtx.font = '12px Segoe UI';
+        movementCtx.fillText('Movement path appears here', 10, 20);
+        return;
+      }
+
+      const lats = movementPoints.map((p) => p.lat);
+      const lons = movementPoints.map((p) => p.lon);
+      const minLat = Math.min(...lats);
+      const maxLat = Math.max(...lats);
+      const minLon = Math.min(...lons);
+      const maxLon = Math.max(...lons);
+      const latSpan = Math.max(0.00001, maxLat - minLat);
+      const lonSpan = Math.max(0.00001, maxLon - minLon);
+
+      const project = (point) => {
+        const x = ((point.lon - minLon) / lonSpan) * (width - 16) + 8;
+        const y = height - ((((point.lat - minLat) / latSpan) * (height - 16)) + 8);
+        return { x, y };
+      };
+
+      movementCtx.strokeStyle = '#2ea4ff';
+      movementCtx.lineWidth = 2;
+      movementCtx.beginPath();
+      movementPoints.forEach((point, index) => {
+        const { x, y } = project(point);
+        if (index === 0) movementCtx.moveTo(x, y);
+        else movementCtx.lineTo(x, y);
+      });
+      movementCtx.stroke();
+
+      const first = project(movementPoints[0]);
+      const last = project(movementPoints[movementPoints.length - 1]);
+      movementCtx.fillStyle = '#42d392';
+      movementCtx.beginPath();
+      movementCtx.arc(first.x, first.y, 4, 0, Math.PI * 2);
+      movementCtx.fill();
+      movementCtx.fillStyle = '#ff4d6d';
+      movementCtx.beginPath();
+      movementCtx.arc(last.x, last.y, 4, 0, Math.PI * 2);
+      movementCtx.fill();
+    }
+
+    async function refreshMovementPoints() {
+      try {
+        const response = await fetch('/api/movement');
+        const data = await response.json();
+        movementPoints = data.points || [];
+        renderMovementMap();
+      } catch {
+      }
+    }
+
+    function strongestNetwork() {
+      if (!radarData.length) return null;
+      return radarData[0];
+    }
+
+    async function postMovementPoint(lat, lon) {
+      const top = strongestNetwork();
+      await fetch('/api/movement', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lat,
+          lon,
+          top_bssid: top?.bssid || null,
+          top_ssid: top?.ssid || null,
+          top_rssi: top?.rssi ?? null,
+        }),
+      });
+    }
+
+    function stopMovementMode() {
+      if (movementWatchId !== null) {
+        navigator.geolocation.clearWatch(movementWatchId);
+        movementWatchId = null;
+      }
+      movementState.textContent = 'idle';
+    }
+
+    function startMovementMode() {
+      if (!navigator.geolocation) {
+        movementState.textContent = 'geolocation unavailable';
+        return;
+      }
+      if (movementWatchId !== null) return;
+      movementState.textContent = 'tracking';
+      movementWatchId = navigator.geolocation.watchPosition(
+        (position) => {
+          postMovementPoint(position.coords.latitude, position.coords.longitude)
+            .then(() => refreshMovementPoints())
+            .catch(() => {
+              movementState.textContent = 'movement post failed';
+            });
+        },
+        () => {
+          movementState.textContent = 'location permission denied';
+          stopMovementMode();
+        },
+        { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 },
+      );
+    }
+
+    async function clearMovement() {
+      try {
+        await fetch('/api/movement', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ clear: true }),
+        });
+      } catch {
+      }
+      movementPoints = [];
+      renderMovementMap();
+    }
+
+    async function applyChannelConfig() {
+      const payload = {
+        mode: channelMode.value,
+        enabled: true,
+        hop_delay: Number(hopMs.value) / 1000,
+        locked_channel: Number(lockChannel.value) > 0 ? Number(lockChannel.value) : null,
+      };
+
+      try {
+        const response = await fetch('/api/channel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        channelConfig = await response.json();
+        refreshChannelUI();
+      } catch {
+        channelStatus.textContent = 'channel update failed';
+      }
+    }
+
+    function refreshChannelUI() {
+      if (!channelConfig) return;
+      channelMode.value = channelConfig.mode || '2.4GHz';
+      hopMs.value = String(Math.round((channelConfig.hop_delay || 0.35) * 1000));
+      lockChannel.value = channelConfig.locked_channel || 0;
+      const lockText = channelConfig.locked_channel ? `locked ${channelConfig.locked_channel}` : 'hopping';
+      const current = channelConfig.current_channel ? `ch ${channelConfig.current_channel}` : 'ch ?';
+      channelStatus.textContent = `${current} • ${lockText}`;
+    }
+
+    function ingestPayload(data) {
+      radarData = data.networks || [];
+      cursor = Number.isInteger(data.version) ? data.version : cursor;
+      channelConfig = data.channel || channelConfig;
+      refreshFilteredView(data.count || 0);
+      maybeAlertHighRisk(radarData);
+      refreshChannelUI();
+      lastUpdate.textContent = new Date().toLocaleTimeString();
+    }
+
     async function fetchData() {
       try {
         const response = await fetch('/api/networks');
-        const data = await response.json();
-        radarData = data.networks || [];
-        cursor = Number.isInteger(data.version) ? data.version : cursor;
-        refreshFilteredView(data.count || 0);
-        maybeAlertHighRisk(radarData);
-        lastUpdate.textContent = new Date().toLocaleTimeString();
+        ingestPayload(await response.json());
       } catch {
         countLabel.textContent = 'Connection error';
       }
@@ -395,12 +689,7 @@
       while (true) {
         try {
           const response = await fetch(`/api/networks/longpoll?since=${cursor}&timeout=25`);
-          const data = await response.json();
-          radarData = data.networks || [];
-          cursor = Number.isInteger(data.version) ? data.version : cursor;
-          refreshFilteredView(data.count || 0);
-          maybeAlertHighRisk(radarData);
-          lastUpdate.textContent = new Date().toLocaleTimeString();
+          ingestPayload(await response.json());
         } catch {
           countLabel.textContent = 'Connection error';
           await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -409,7 +698,9 @@
     }
 
     sizeCanvas();
+    sizeMovementCanvas();
     window.addEventListener('resize', sizeCanvas);
+    window.addEventListener('resize', sizeMovementCanvas);
     window.addEventListener('pointerdown', () => {
       const ctx = ensureAudioContext();
       if (ctx) {
@@ -424,12 +715,22 @@
     beepHigh.addEventListener('change', () => {
       audioState.textContent = beepHigh.checked ? 'Audio armed' : 'Audio muted';
     });
+    applyChannel.addEventListener('click', applyChannelConfig);
+    ruleMinRssi.addEventListener('input', updateAlertRulesFromUI);
+    ruleMinConfidence.addEventListener('input', updateAlertRulesFromUI);
+    ruleCategoryBoxes.forEach((box) => box.addEventListener('change', updateAlertRulesFromUI));
+    startMovementBtn.addEventListener('click', startMovementMode);
+    stopMovementBtn.addEventListener('click', stopMovementMode);
+    clearMovementBtn.addEventListener('click', clearMovement);
     zoomSlider.addEventListener('input', () => {
       zoomFactor = Number(zoomSlider.value) / 100;
       zoomValue.textContent = `${zoomFactor.toFixed(1)}x`;
     });
     zoomFactor = Number(zoomSlider.value) / 100;
     zoomValue.textContent = `${zoomFactor.toFixed(1)}x`;
+    updateAlertRulesFromUI();
+    refreshMovementPoints();
+    setInterval(refreshMovementPoints, 8000);
     render();
     fetchData();
     longPollLoop();

@@ -15,6 +15,15 @@ device_lock = threading.RLock()
 update_condition = threading.Condition(device_lock)
 detected_devices: Dict[str, dict] = {}
 data_version = 0
+movement_points: List[dict] = []
+
+CHANNEL_STATE = {
+    "mode": "2.4GHz",
+    "enabled": True,
+    "locked_channel": None,
+    "hop_delay": 0.35,
+    "current_channel": None,
+}
 
 FLOCK_KEYWORDS = ["flock", "falcon", "lpr", "plate", "flocksafety"]
 CAMERA_KEYWORDS = [
@@ -58,6 +67,12 @@ HOME_KEYWORDS = [
     "att",
     "tp-link",
 ]
+
+CHANNEL_LISTS = {
+    "2.4GHz": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+    "5GHz": [36, 40, 44, 48, 149, 153, 157, 161],
+    "dual": [1, 6, 11, 36, 40, 44, 48, 149, 153, 157, 161],
+}
 
 
 def calculate_distance(rssi: int, measure_power: float = -30.0) -> float:
@@ -170,6 +185,20 @@ def classify_network(ssid: str, crypto: str, bssid: str) -> tuple[str, str, List
     return baseline_risk, category, matches
 
 
+def compute_confidence(rssi: int, sightings: int, avg_rssi: float, jitter: float, age_seconds: float) -> int:
+    signal_score = max(0.0, min(1.0, (rssi + 100) / 45.0))
+    repeat_score = max(0.0, min(1.0, sightings / 12.0))
+    consistency_score = max(0.0, min(1.0, 1.0 - (jitter / 20.0)))
+    freshness_score = max(0.0, min(1.0, 1.0 - (age_seconds / 120.0)))
+    score = (
+        signal_score * 0.35
+        + repeat_score * 0.25
+        + consistency_score * 0.25
+        + freshness_score * 0.15
+    )
+    return int(round(score * 100))
+
+
 def update_device(packet, measure_power: float) -> None:
     global data_version
 
@@ -187,18 +216,46 @@ def update_device(packet, measure_power: float) -> None:
     distance = calculate_distance(rssi, measure_power)
     risk, category, matches = classify_network(ssid, crypto, bssid)
 
+    now = time.time()
+
     with update_condition:
+        previous = detected_devices.get(bssid)
+        sightings = 1
+        first_seen = now
+        avg_rssi = float(rssi)
+        jitter = 0.0
+        if previous:
+            sightings = int(previous.get("sightings", 1)) + 1
+            first_seen = float(previous.get("first_seen", now))
+            prev_avg = float(previous.get("avg_rssi", rssi))
+            avg_rssi = prev_avg + ((rssi - prev_avg) / max(sightings, 1))
+            prev_jitter = float(previous.get("rssi_jitter", 0.0))
+            jitter = (prev_jitter * 0.7) + (abs(rssi - prev_avg) * 0.3)
+
+        confidence = compute_confidence(
+            rssi=rssi,
+            sightings=sightings,
+            avg_rssi=avg_rssi,
+            jitter=jitter,
+            age_seconds=now - first_seen,
+        )
+
         detected_devices[bssid] = {
             "bssid": bssid,
             "ssid": ssid,
             "rssi": rssi,
+            "avg_rssi": round(avg_rssi, 2),
+            "rssi_jitter": round(jitter, 2),
+            "sightings": sightings,
+            "first_seen": first_seen,
             "distance": distance,
             "risk": risk,
             "category": category,
             "matches": matches,
+            "confidence": confidence,
             "crypto": crypto,
             "channel": channel,
-            "last_seen": time.time(),
+            "last_seen": now,
         }
         data_version += 1
         update_condition.notify_all()
@@ -251,19 +308,37 @@ def build_radar_payload(max_distance: float = 60.0) -> List[dict]:
 
 
 def channel_hopper(interface_name: str, stop_event: threading.Event, hop_delay: float = 0.35) -> None:
-    channels = [str(channel) for channel in range(1, 14)]
     index = 0
 
     while not stop_event.is_set():
-        channel = channels[index % len(channels)]
+        with device_lock:
+            enabled = bool(CHANNEL_STATE.get("enabled", True))
+            mode = str(CHANNEL_STATE.get("mode", "2.4GHz"))
+            locked_channel = CHANNEL_STATE.get("locked_channel")
+            dynamic_hop_delay = float(CHANNEL_STATE.get("hop_delay", hop_delay))
+
+        if not enabled:
+            time.sleep(0.25)
+            continue
+
+        channels = CHANNEL_LISTS.get(mode, CHANNEL_LISTS["2.4GHz"])
+        if locked_channel is not None:
+            channel = int(locked_channel)
+            sleep_time = 0.5
+        else:
+            channel = int(channels[index % len(channels)])
+            index += 1
+            sleep_time = max(0.12, min(dynamic_hop_delay, 2.0))
+
         subprocess.run(
-            ["iw", "dev", interface_name, "set", "channel", channel],
+            ["iw", "dev", interface_name, "set", "channel", str(channel)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
         )
-        index += 1
-        time.sleep(hop_delay)
+        with device_lock:
+            CHANNEL_STATE["current_channel"] = channel
+        time.sleep(sleep_time)
 
 
 @app.route("/")
@@ -273,9 +348,12 @@ def index():
 
 @app.route("/api/networks")
 def api_networks():
+    with device_lock:
+        channel_state = dict(CHANNEL_STATE)
     return jsonify({
         "count": len(detected_devices),
         "networks": build_radar_payload(),
+        "channel": channel_state,
         "version": data_version,
         "timestamp": time.time(),
     })
@@ -306,12 +384,90 @@ def api_networks_longpoll():
             update_condition.wait(timeout=remaining)
         current_version = data_version
 
+    with device_lock:
+        channel_state = dict(CHANNEL_STATE)
+
     return jsonify({
         "count": len(detected_devices),
         "networks": build_radar_payload(),
+        "channel": channel_state,
         "version": current_version,
         "timestamp": time.time(),
     })
+
+
+@app.route("/api/channel", methods=["GET", "POST"])
+def api_channel():
+    if request.method == "POST":
+        payload = request.get_json(silent=True) or {}
+        with device_lock:
+            mode = payload.get("mode")
+            if mode in CHANNEL_LISTS:
+                CHANNEL_STATE["mode"] = mode
+
+            if "enabled" in payload:
+                CHANNEL_STATE["enabled"] = bool(payload.get("enabled"))
+
+            if "hop_delay" in payload:
+                try:
+                    delay = float(payload.get("hop_delay"))
+                    CHANNEL_STATE["hop_delay"] = max(0.12, min(delay, 2.0))
+                except (TypeError, ValueError):
+                    pass
+
+            if "locked_channel" in payload:
+                value = payload.get("locked_channel")
+                if value in [None, "", 0, "0"]:
+                    CHANNEL_STATE["locked_channel"] = None
+                else:
+                    try:
+                        CHANNEL_STATE["locked_channel"] = int(value)
+                    except (TypeError, ValueError):
+                        pass
+
+    with device_lock:
+        return jsonify(dict(CHANNEL_STATE))
+
+
+@app.route("/api/movement", methods=["GET", "POST"])
+def api_movement():
+    if request.method == "POST":
+        payload = request.get_json(silent=True) or {}
+        if payload.get("clear"):
+            with device_lock:
+                movement_points.clear()
+            return jsonify({"ok": True, "cleared": True})
+
+        lat = payload.get("lat")
+        lon = payload.get("lon")
+        top_bssid = payload.get("top_bssid")
+        top_ssid = payload.get("top_ssid")
+        top_rssi = payload.get("top_rssi")
+
+        try:
+            lat = float(lat)
+            lon = float(lon)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "invalid lat/lon"}), 400
+
+        point = {
+            "ts": time.time(),
+            "lat": lat,
+            "lon": lon,
+            "top_bssid": top_bssid,
+            "top_ssid": top_ssid,
+            "top_rssi": top_rssi,
+        }
+
+        with device_lock:
+            movement_points.append(point)
+            if len(movement_points) > 500:
+                del movement_points[0 : len(movement_points) - 500]
+        return jsonify({"ok": True})
+
+    with device_lock:
+        points = list(movement_points)
+    return jsonify({"count": len(points), "points": points})
 
 
 def parse_args() -> argparse.Namespace:
