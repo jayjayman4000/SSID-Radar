@@ -1,5 +1,6 @@
 import argparse
 import hashlib
+import json
 import statistics
 import os
 import subprocess
@@ -17,6 +18,8 @@ update_condition = threading.Condition(device_lock)
 detected_devices: Dict[str, dict] = {}
 data_version = 0
 movement_points: List[dict] = []
+current_target: Dict[str, object] = {}
+TARGET_FILE = os.path.join(os.path.dirname(__file__), 'selected_target.json')
 
 CHANNEL_STATE = {
     "mode": "2.4GHz",
@@ -67,15 +70,16 @@ HOME_KEYWORDS = [
     "verizon",
     "att",
     "tp-link",
+    "family",
 ]
 
 CHANNEL_LISTS = {
     "2.4GHz": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
-    "5GHz": [36, 40, 44, 48, 149, 153, 157, 161],
-    "dual": [1, 6, 11, 36, 40, 44, 48, 149, 153, 157, 161],
+    "5GHz": [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161, 165],
+    "dual": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161, 165],
 }
 
-MAX_DISPLAY_DISTANCE_M = 180.0
+MAX_DISPLAY_DISTANCE_M = 360.0
 RSSI_HISTORY_SIZE = 9
 
 
@@ -101,11 +105,16 @@ def robust_distance_from_rssi(rssi_history: List[int], measure_power: float) -> 
 
 def get_ssid(packet) -> str:
     try:
-        raw = packet[Dot11Elt].info
-        decoded = raw.decode("utf-8", errors="replace").strip()
-        return decoded if decoded else "Hidden SSID"
+        elt = packet.getlayer(Dot11Elt)
+        while elt is not None:
+            if getattr(elt, "ID", None) == 0 and hasattr(elt, "info"):
+                raw = elt.info
+                decoded = raw.decode("utf-8", errors="replace").strip()
+                return decoded if decoded else "Hidden SSID"
+            elt = elt.payload.getlayer(Dot11Elt)
     except Exception:
-        return "Hidden SSID"
+        pass
+    return "Hidden SSID"
 
 
 def get_crypto(packet) -> str:
@@ -286,6 +295,27 @@ def update_device(packet, measure_power: float) -> None:
         update_condition.notify_all()
 
 
+def load_current_target() -> Dict[str, object]:
+    try:
+        if os.path.isfile(TARGET_FILE):
+            with open(TARGET_FILE, 'r', encoding='utf-8') as target_file:
+                return json.load(target_file)
+    except Exception:
+        pass
+    return {}
+
+
+def save_current_target(target: Dict[str, object]) -> None:
+    try:
+        with open(TARGET_FILE, 'w', encoding='utf-8') as target_file:
+            json.dump(target, target_file, indent=2)
+    except Exception:
+        pass
+
+
+current_target = load_current_target()
+
+
 def build_radar_payload(max_distance: float = 60.0) -> List[dict]:
     now = time.time()
     payload = []
@@ -371,18 +401,20 @@ def index():
     return render_template("index.html")
 
 
+
 @app.route("/api/networks")
 def api_networks():
     with device_lock:
         channel_state = dict(CHANNEL_STATE)
+    payload = build_radar_payload()
     return jsonify({
-        "count": len(detected_devices),
-        "networks": build_radar_payload(),
+        "count": len(payload),
+        "networks": payload,
         "channel": channel_state,
+        "target": current_target,
         "version": data_version,
         "timestamp": time.time(),
     })
-
 
 @app.route("/api/networks/longpoll")
 def api_networks_longpoll():
@@ -412,14 +444,15 @@ def api_networks_longpoll():
     with device_lock:
         channel_state = dict(CHANNEL_STATE)
 
+    payload = build_radar_payload()
     return jsonify({
-        "count": len(detected_devices),
-        "networks": build_radar_payload(),
+        "count": len(payload),
+        "networks": payload,
         "channel": channel_state,
+        "target": current_target,
         "version": current_version,
         "timestamp": time.time(),
     })
-
 
 @app.route("/api/channel", methods=["GET", "POST"])
 def api_channel():
@@ -452,6 +485,41 @@ def api_channel():
 
     with device_lock:
         return jsonify(dict(CHANNEL_STATE))
+
+
+@app.route("/api/target", methods=["GET", "POST"])
+def api_target():
+    global current_target
+
+    if request.method == "POST":
+        payload = request.get_json(silent=True) or {}
+        if payload.get("clear"):
+            current_target = {}
+            save_current_target(current_target)
+            return jsonify({"ok": True, "target": current_target})
+
+        bssid = payload.get("bssid")
+        ssid = payload.get("ssid")
+        if not bssid:
+            return jsonify({"ok": False, "error": "missing bssid"}), 400
+
+        with device_lock:
+            info = detected_devices.get(bssid, {})
+
+        current_target = {
+            "bssid": bssid,
+            "ssid": ssid or info.get("ssid", "Unknown"),
+            "risk": info.get("risk", "UNKNOWN"),
+            "category": info.get("category", "UNKNOWN"),
+            "confidence": info.get("confidence"),
+            "last_seen": info.get("last_seen"),
+            "selected_at": time.time(),
+        }
+        save_current_target(current_target)
+        return jsonify({"ok": True, "target": current_target})
+
+    with device_lock:
+        return jsonify({"target": current_target})
 
 
 @app.route("/api/movement", methods=["GET", "POST"])

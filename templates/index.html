@@ -173,6 +173,57 @@
       line-height: 1.35;
     }
 
+    .selected-target {
+      display: grid;
+      gap: 8px;
+      align-items: center;
+      width: 100%;
+    }
+
+    .radar-menu {
+      position: fixed;
+      z-index: 999;
+      min-width: 240px;
+      background: rgba(6, 17, 36, 0.97);
+      border: 1px solid rgba(46, 164, 255, 0.35);
+      border-radius: 12px;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+      padding: 12px;
+      color: var(--text);
+      font-size: 13px;
+      display: none;
+    }
+
+    .radar-menu.visible {
+      display: block;
+    }
+
+    .radar-menu button {
+      width: 100%;
+      background: #123a66;
+      color: #d8eeff;
+      border: 1px solid #2f67a3;
+      border-radius: 8px;
+      padding: 8px 10px;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .radar-menu .menu-title {
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .radar-menu .menu-network {
+      color: #9ccff6;
+      margin-bottom: 10px;
+      font-size: 12px;
+    }
+
+    .radar-menu button + button {
+      margin-top: 8px;
+    }
+
     .ssid {
       font-weight: 600;
       color: #d8eeff;
@@ -204,8 +255,18 @@
   <aside class="panel list-panel">
     <header class="list-title">Detected Networks</header>
     <div class="stats">
-      <span id="countLabel">0 active</span>
+      <span>
+        <span id="countLabel">0 active</span>
+        <span id="hiddenLabel" style="margin-left: 16px; color: #8fcfff;">0 hidden</span>
+      </span>
       <span>Live scan</span>
+    </div>
+    <div class="panel-block">
+      <div><strong>Selected Target</strong></div>
+      <div class="panel-row" id="selectedTargetPanel">
+        <span id="selectedTargetName">No target selected</span>
+        <button id="clearTargetBtn" type="button">Clear</button>
+      </div>
     </div>
     <div class="controls">
       <label><input id="ignoreHome" type="checkbox"> Ignore dorm/home-like</label>
@@ -283,6 +344,14 @@
     const clearMovementBtn = document.getElementById('clearMovement');
     const movementState = document.getElementById('movementState');
     const ruleCategoryBoxes = Array.from(document.querySelectorAll('.rule-cat'));
+    const selectedTargetName = document.getElementById('selectedTargetName');
+    const clearTargetBtn = document.getElementById('clearTargetBtn');
+    const hiddenLabel = document.getElementById('hiddenLabel');
+    const radarMenu = document.getElementById('radarMenu');
+    const radarMenuSsid = document.getElementById('radarMenuSsid');
+    const menuSelectTarget = document.getElementById('menuSelectTarget');
+    const menuHideNetwork = document.getElementById('menuHideNetwork');
+    const menuClose = document.getElementById('menuClose');
 
     let sweepAngle = 0;
     let radarData = [];
@@ -293,6 +362,9 @@
     let channelConfig = null;
     let movementWatchId = null;
     let movementPoints = [];
+    let selectedTarget = null;
+    let hiddenBssids = new Set();
+    let activeMenuNetwork = null;
     let channelFormDirty = false;
 
     const alertRules = {
@@ -314,6 +386,7 @@
         channelMode: channelMode.value,
         hopMs: hopMs.value,
         lockChannel: lockChannel.value,
+        hiddenBssids: Array.from(hiddenBssids),
       };
       localStorage.setItem('sophiaUiSettings', JSON.stringify(settings));
     }
@@ -335,6 +408,9 @@
         if (settings.channelMode) channelMode.value = settings.channelMode;
         if (settings.hopMs) hopMs.value = settings.hopMs;
         if (settings.lockChannel) lockChannel.value = settings.lockChannel;
+        if (Array.isArray(settings.hiddenBssids)) {
+          hiddenBssids = new Set(settings.hiddenBssids.filter(Boolean));
+        }
       } catch {
       }
     }
@@ -426,14 +502,103 @@
     }
 
     function visibleNetworks() {
-      if (!ignoreHome.checked) return radarData;
-      return radarData.filter((network) => {
+      const available = radarData.filter((network) => !hiddenBssids.has(network.bssid));
+      if (!ignoreHome.checked) return available;
+      return available.filter((network) => {
         const denseDormLike = (network.same_ssid_count || 1) >= 10;
         if (SENSITIVE_CATEGORIES.has(network.category)) {
           return true;
         }
         return !denseDormLike && network.category !== 'HOME';
       });
+    }
+
+    function mapNetworkPosition(network, cx, cy, radius) {
+      const angle = (network.angle * Math.PI) / 180;
+      const scaledDistance = Math.min(network.normalized_distance * zoomFactor, 1.0);
+      const r = scaledDistance * radius;
+      return {
+        x: cx + Math.cos(angle) * r,
+        y: cy + Math.sin(angle) * r,
+      };
+    }
+
+    function showRadarMenu(x, y, network) {
+      activeMenuNetwork = network;
+      radarMenuSsid.textContent = `${network.ssid || 'Hidden SSID'} (${network.bssid})`;
+      radarMenu.style.left = `${Math.min(window.innerWidth - 260, x)}px`;
+      radarMenu.style.top = `${Math.min(window.innerHeight - 150, y)}px`;
+      radarMenu.classList.add('visible');
+    }
+
+    function hideRadarMenu() {
+      activeMenuNetwork = null;
+      radarMenu.classList.remove('visible');
+    }
+
+    function selectTarget(network) {
+      selectedTarget = network;
+      renderSelectedTarget();
+      fetch('/api/target', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          bssid: network.bssid,
+          ssid: network.ssid,
+        }),
+      }).catch(() => {});
+    }
+
+    function clearTargetSelection() {
+      selectedTarget = null;
+      renderSelectedTarget();
+      fetch('/api/target', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clear: true }),
+      }).catch(() => {});
+    }
+
+    function hideNetwork(network) {
+      hiddenBssids.add(network.bssid);
+      saveUiSettings();
+      refreshFilteredView(radarData.length);
+    }
+
+    function handleRadarClick(event) {
+      const rect = canvas.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      const cx = rect.width / 2;
+      const cy = rect.height / 2;
+      const radius = Math.min(rect.width, rect.height) * 0.44;
+      let closest = null;
+      let closestDistance = 999;
+
+      visibleNetworks().forEach((network) => {
+        const pos = mapNetworkPosition(network, cx, cy, radius);
+        const distance = Math.hypot(pos.x - x, pos.y - y);
+        if (distance < 18 && distance < closestDistance) {
+          closestDistance = distance;
+          closest = network;
+        }
+      });
+
+      if (closest) {
+        showRadarMenu(event.clientX + 6, event.clientY + 6, closest);
+      } else {
+        hideRadarMenu();
+      }
+    }
+
+    function fetchSelectedTarget() {
+      fetch('/api/target')
+        .then((response) => response.json())
+        .then((data) => {
+          selectedTarget = data.target || null;
+          renderSelectedTarget();
+        })
+        .catch(() => {});
     }
 
     function drawTargets(cx, cy, radius) {
@@ -496,9 +661,22 @@
     function refreshFilteredView(totalCount) {
       const visible = visibleNetworks();
       const total = Number.isInteger(totalCount) ? totalCount : radarData.length;
-      const hidden = Math.max(0, total - visible.length);
+      const hidden = Math.max(0, radarData.length - visible.length);
       countLabel.textContent = `${visible.length} shown / ${total} active (${hidden} hidden)`;
+      hiddenLabel.textContent = `${hidden} hidden`;
       renderList(visible);
+    }
+
+    function renderSelectedTarget() {
+      if (!selectedTarget || !selectedTarget.bssid) {
+        selectedTargetName.textContent = 'No target selected';
+        return;
+      }
+      selectedTargetName.textContent = `${selectedTarget.ssid || 'Unknown SSID'} • ${selectedTarget.bssid}`;
+    }
+
+    function isNetworkHidden(network) {
+      return hiddenBssids.has(network.bssid);
     }
 
     function ensureAudioContext() {
@@ -791,6 +969,26 @@
     startMovementBtn.addEventListener('click', startMovementMode);
     stopMovementBtn.addEventListener('click', stopMovementMode);
     clearMovementBtn.addEventListener('click', clearMovement);
+    clearTargetBtn.addEventListener('click', clearTargetSelection);
+    canvas.addEventListener('click', handleRadarClick);
+    menuSelectTarget.addEventListener('click', () => {
+      if (activeMenuNetwork) {
+        selectTarget(activeMenuNetwork);
+        hideRadarMenu();
+      }
+    });
+    menuHideNetwork.addEventListener('click', () => {
+      if (activeMenuNetwork) {
+        hideNetwork(activeMenuNetwork);
+        hideRadarMenu();
+      }
+    });
+    menuClose.addEventListener('click', hideRadarMenu);
+    window.addEventListener('click', (event) => {
+      if (radarMenu.classList.contains('visible') && !radarMenu.contains(event.target) && event.target !== canvas) {
+        hideRadarMenu();
+      }
+    });
     zoomSlider.addEventListener('input', () => {
       zoomFactor = Number(zoomSlider.value) / 100;
       zoomValue.textContent = `${zoomFactor.toFixed(1)}x`;
@@ -801,9 +999,18 @@
     updateAlertRulesFromUI();
     refreshMovementPoints();
     setInterval(refreshMovementPoints, 8000);
+    fetchSelectedTarget();
     render();
     fetchData();
     longPollLoop();
   </script>
+
+  <div id="radarMenu" class="radar-menu" role="dialog" aria-modal="true">
+    <div class="menu-title">Radar action</div>
+    <div id="radarMenuSsid" class="menu-network">No network selected</div>
+    <button id="menuSelectTarget" type="button">Select as SOI target</button>
+    <button id="menuHideNetwork" type="button">Hide from radar/list</button>
+    <button id="menuClose" type="button">Cancel</button>
+  </div>
 </body>
 </html>

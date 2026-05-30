@@ -6,10 +6,16 @@ covers home networks, police cruisers, flock cameras etc.
 
 - Flask Web HUD (`templates/index.html`) with tactical blue radar map
 - Threaded Scapy sniffer + Flask server in one script (`sophia.py`)
-- In-script channel hopping (1-13) so no second terminal is needed
+- In-script channel hopping (1-13 2.4GHz, full 5GHz band, or all channels in dual mode)
 - Live channel controls (2.4GHz / 5GHz / dual, hop delay, lock channel)
+  - **Dual mode now scans all 2.4GHz + 5GHz channels** for comprehensive coverage
 - High-risk classification for FLOCK / police-like / security camera signatures
 - HUD toggle to ignore dorm/home-like networks (including SSIDs with 10+ matching names)
+- **Radar click selection**: Click on radar pings to open action menu
+  - Select networks as SOI (Signals of Interest) targets
+  - Hide networks from radar and list display
+  - Selected target is persisted and saved to `selected_target.json`
+- **Selected Target display panel** showing current SOI with BSSID and risk level
 - Audible beep alerts for newly detected high-risk targets
 - HUD zoom slider to change radar scale
 - Confidence scoring per target (signal + repeat sightings + stability + freshness)
@@ -46,6 +52,15 @@ If your adapter is not named `wlan0` (for example `wlp2s0`), run:
 ./launch_sophia.sh wlp2s0
 ```
 
+## Radar HUD Usage
+
+- **Click on radar pings** to see action menu (Select as target, Hide network)
+- **Hidden networks** are persisted in browser localStorage
+- **Selected targets** are saved server-side to `selected_target.json`
+- **Channel controls** allow switching between 2.4GHz, 5GHz, or Dual (all channels)
+- **Zoom slider** scales the radar display (0.6x to 2.2x)
+- **Alert rules** let you filter by RSSI, confidence, and network category
+
 ## Restore normal Wi-Fi / internet
 
 If monitor mode stays active and internet is down, run:
@@ -59,6 +74,14 @@ If monitor mode stays active and internet is down, run:
 Current radar direction is visual/simulated (stable hash angle per BSSID), not true physical bearing.
 To get true N/S/E/W orientation to a transmitter, you need additional direction hardware
 (directional antennas, phased arrays, or multi-receiver triangulation with heading sensors).
+
+## API Endpoints
+
+- `GET/POST /api/networks` - Fetch detected networks
+- `GET/POST /api/networks/longpoll` - Long-poll for network updates
+- `GET/POST /api/channel` - Get/set channel hopping configuration
+- `GET/POST /api/target` - Get/set selected SOI target
+- `GET/POST /api/movement` - Get/post GPS movement breadcrumbs
 
 HUD URL:
 
