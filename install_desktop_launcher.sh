@@ -5,6 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 START_DESKTOP_FILE="$HOME/Desktop/SOPHIA WiFi Radar.desktop"
 STOP_DESKTOP_FILE="$HOME/Desktop/SOPHIA WiFi Radar Shutdown.desktop"
 
+# Create Desktop directory if it doesn't exist
+mkdir -p "$HOME/Desktop"
+
 chmod +x "$SCRIPT_DIR/launch_sophia.sh"
 chmod +x "$SCRIPT_DIR/shutdown_sophia.sh"
 
